@@ -8,8 +8,8 @@ TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ADMIN_ID = "8040642138" 
-CHANNEL_ID = "@vash_kanal"  # Юзернейм канала с @
-CHANNEL_LINK = "https://t.me/vash_kanal"
+CHANNEL_ID = "@traffchanel"  # Юзернейм канала с @
+CHANNEL_LINK = "https://t.me/traffchanel"
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
