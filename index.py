@@ -6,15 +6,17 @@ from flask import Flask, request
 TOKEN = os.getenv("BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
 
-bot = telebot.TeleBot(TOKEN, threaded=False) if TOKEN else None
+bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
 def get_db_connection():
     if not DB_URL:
+        print("DATABASE_URL не настроен")
         return None
     try:
-        # Прямое подключение с SSL, так как в Supabase он включен
-        return psycopg2.connect(DB_URL, sslmode='require', connect_timeout=10)
+        # Прямое использование DB_URL, так как мы добавили sslmode в саму строку
+        conn = psycopg2.connect(DB_URL)
+        return conn
     except Exception as e:
         print(f"Ошибка подключения к БД: {e}")
         return None
@@ -34,23 +36,30 @@ def init_db():
                     );
                 """)
             conn.commit()
+            print("БД инициализирована успешно")
+        except Exception as e:
+            print(f"Ошибка инициализации БД: {e}")
         finally:
             conn.close()
 
+# Инициализируем при запуске
 init_db()
 
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
     ref_id = None
+    
     args = message.text.split()
     if len(args) > 1 and args[1].isdigit():
         ref_id = int(args[1])
-    if ref_id == user_id: ref_id = None
+    
+    if ref_id == user_id: 
+        ref_id = None
 
     conn = get_db_connection()
     if not conn:
-        bot.reply_to(message, "⚠️ База данных временно недоступна.")
+        bot.reply_to(message, "⚠️ Сервис временно недоступен (ошибка БД).")
         return
 
     try:
@@ -64,11 +73,12 @@ def start(message):
                 if ref_id:
                     cur.execute("UPDATE users SET refs_count = refs_count + 1 WHERE user_id = %s", (ref_id,))
                 conn.commit()
-                bot.reply_to(message, "✅ Регистрация завершена!")
+                bot.reply_to(message, "✅ Вы успешно зарегистрированы!")
             else:
-                bot.reply_to(message, "Вы уже зарегистрированы.")
+                bot.reply_to(message, "С возвращением! Вы уже зарегистрированы.")
     except Exception as e:
-        bot.reply_to(message, f"Ошибка: {str(e)}")
+        print(f"Ошибка запроса: {e}")
+        bot.reply_to(message, "Произошла ошибка при регистрации.")
     finally:
         conn.close()
 
@@ -83,4 +93,4 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Бот готов к работе", 200
+    return "Статус: Бот работает", 200
