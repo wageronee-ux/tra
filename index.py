@@ -25,15 +25,14 @@ def check_sub(user_id):
 
 def main_keyboard(user_id):
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-    # Исправленные кнопки без лишних функций
-    btn_profile = telebot.types.InlineKeyboardButton("👤 Профиль", callback_data="profile")
-    btn_top = telebot.types.InlineKeyboardButton("🏆 ТОП 10", callback_data="top_list")
-    btn_ref = telebot.types.InlineKeyboardButton("🔗 Ссылка", callback_data="ref_menu")
-    btn_withdraw = telebot.types.InlineKeyboardButton("💸 Вывод", callback_data="withdraw_money")
-    
-    markup.add(btn_profile, btn_top)
-    markup.add(btn_ref, btn_withdraw)
-    
+    markup.add(
+        telebot.types.InlineKeyboardButton("👤 Профиль", callback_data="profile"),
+        telebot.types.InlineKeyboardButton("🏆 ТОП 10", callback_data="top_list")
+    )
+    markup.add(
+        telebot.types.InlineKeyboardButton("🔗 Ссылка", callback_data="ref_menu"),
+        telebot.types.InlineKeyboardButton("💸 Вывод", callback_data="withdraw_money")
+    )
     if user_id == ADMIN_ID:
         markup.add(telebot.types.InlineKeyboardButton("⚙️ Админ-панель", callback_data="admin_main"))
     return markup
@@ -57,7 +56,6 @@ def start(message):
         bot.send_message(message.chat.id, f"⚠️ Для доступа подпишитесь на канал {CHANNEL_ID}", reply_markup=sub_keyboard())
         return
 
-    # Логика рефералов (твои алгоритмы)
     ref_id = None
     args = message.text.split()
     if len(args) > 1 and args[1].isdigit():
@@ -87,7 +85,7 @@ def start(message):
     except:
         bot.send_message(message.chat.id, "⚠️ Ошибка базы данных.")
 
-# --- 4. ОБРАБОТКА КНОПОК ---
+# --- 4. ОБРАБОТКА КНОПОК (CALLBACK) ---
 @bot.callback_query_handler(func=lambda call: True)
 def callback_inline(call):
     user_id = call.from_user.id
@@ -100,13 +98,11 @@ def callback_inline(call):
             bot.answer_callback_query(call.id, "❌ Ты всё еще не подписан!", show_alert=True)
 
     elif call.data == "profile":
-        try:
-            res = supabase.table("users").select("balance", "refs_count").eq("user_id", user_id).execute()
-            if res.data:
-                d = res.data[0]
-                text = f"👤 **ПРОФИЛЬ**\n\n💰 Баланс: `${d.get('balance', 0):.2f}`\n👥 Рефералов: `{d.get('refs_count', 0)}`"
-                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard(user_id), parse_mode="Markdown")
-        except: bot.answer_callback_query(call.id, "Ошибка БД")
+        res = supabase.table("users").select("balance", "refs_count").eq("user_id", user_id).execute()
+        if res.data:
+            d = res.data[0]
+            text = f"👤 **ПРОФИЛЬ**\n\n💰 Баланс: `${d.get('balance', 0):.2f}`\n👥 Рефералов: `{d.get('refs_count', 0)}`"
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard(user_id), parse_mode="Markdown")
 
     elif call.data == "ref_menu":
         bot_info = bot.get_me()
@@ -115,29 +111,21 @@ def callback_inline(call):
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard(user_id), parse_mode="Markdown")
 
     elif call.data == "top_list":
-        try:
-            res = supabase.table("users").select("first_name", "refs_count").order("refs_count", desc=True).limit(10).execute()
-            text = "🏆 **ТОП 10 ЛИДЕРОВ**\n\n"
-            for i, u in enumerate(res.data, 1):
-                m = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "👤"
-                text += f"{m} {i}. {u['first_name']} — `{u['refs_count']}` чел.\n"
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard(user_id), parse_mode="Markdown")
-        except: bot.answer_callback_query(call.id, "Ошибка ТОПа")
+        res = supabase.table("users").select("first_name", "refs_count").order("refs_count", desc=True).limit(10).execute()
+        text = "🏆 **ТОП 10 ЛИДЕРОВ**\n\n"
+        for i, u in enumerate(res.data, 1):
+            m = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "👤"
+            text += f"{m} {i}. {u['first_name']} — `{u['refs_count']}` чел.\n"
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard(user_id), parse_mode="Markdown")
 
     elif call.data == "withdraw_money":
-        try:
-            res = supabase.table("users").select("balance", "first_name").eq("user_id", user_id).execute()
-            bal = res.data[0].get("balance", 0) if res.data else 0
-            if bal < 5.0:
-                bot.answer_callback_query(call.id, f"❌ Минимум $5.00 (у тебя ${bal:.2f})", show_alert=True)
-            else:
-                bot.send_message(LOG_CHANNEL_ID, f"💸 **ВЫВОД**\nЮзер: {res.data[0]['first_name']} (`{user_id}`)\nСумма: ${bal:.2f}")
-                bot.answer_callback_query(call.id, "✅ Заявка отправлена!", show_alert=True)
-        except: bot.answer_callback_query(call.id, "Ошибка вывода")
-
-    elif call.data == "admin_main" and user_id == ADMIN_ID:
-        bot.edit_message_text("⚙️ Админка", call.message.chat.id, call.message.message_id, 
-                              reply_markup=telebot.types.InlineKeyboardMarkup().add(telebot.types.InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")))
+        res = supabase.table("users").select("balance", "first_name").eq("user_id", user_id).execute()
+        bal = res.data[0].get("balance", 0) if res.data else 0
+        if bal < 5.0:
+            bot.answer_callback_query(call.id, f"❌ Минимум $5.00 (у тебя ${bal:.2f})", show_alert=True)
+        else:
+            bot.send_message(LOG_CHANNEL_ID, f"💸 **ВЫВОД**\nЮзер: {res.data[0]['first_name']} (`{user_id}`)\nСумма: ${bal:.2f}")
+            bot.answer_callback_query(call.id, "✅ Заявка отправлена!", show_alert=True)
 
 # --- 5. ВЕБХУК ---
 @app.route('/', methods=['POST'])
@@ -145,6 +133,7 @@ def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
+        # ВАЖНО: обрабатываем обновление
         bot.process_new_updates([update])
         return "OK", 200
     return "Forbidden", 403
