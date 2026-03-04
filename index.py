@@ -1,37 +1,39 @@
 import asyncio
 import os
 from flask import Flask, request
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.types import Update
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 
+# Инициализация Flask
 app = Flask(__name__)
 
-# Используем MemoryStorage для временного хранения состояний
+# Инициализация бота
 bot = Bot(token=os.getenv("BOT_TOKEN"))
+# В aiogram 3 хранилище указывается при создании диспетчера
 dp = Dispatcher(storage=MemoryStorage())
 
 # --- ХЕНДЛЕРЫ ---
 
-# state="*" позволяет команде работать, даже если бот ждет ответа на другой вопрос
-@dp.message(Command("start"), state="*")
+# Убрали аргумент state="*", так как в 3.x он вызывает ошибку при таком использовании
+@dp.message(Command("start"))
 async def send_welcome(message: types.Message, state: FSMContext):
-    """Сбрасывает любое состояние и приветствует пользователя"""
-    await state.clear() # Очищаем состояние
-    await message.answer("✅ Команда /start распознана! Я готов к работе.")
+    """Реагирует на /start и сбрасывает любые зависшие состояния"""
+    await state.clear() 
+    await message.answer("✅ Теперь всё исправлено! Бот стабильно реагирует на /start.")
 
 @dp.message(Command("help"))
 async def send_help(message: types.Message):
-    await message.answer("Отправь /start, если я перестал отвечать.")
+    await message.answer("Если бот не отвечает, попробуй нажать /start")
 
 @dp.message()
 async def echo_all(message: types.Message):
-    """Ловушка для любого текста"""
-    await message.answer(f"🤖 Ты написал: {message.text}")
+    """Обрабатывает любой текст"""
+    await message.answer(f"🤖 Получено: {message.text}")
 
-# --- ЛОГИКА VERCEL ---
+# --- ЛОГИКА WEBHOOK ---
 
 async def process_update(data):
     update = Update.model_validate(data, context={"bot": bot})
@@ -50,6 +52,6 @@ def webhook():
         except Exception as e:
             print(f"Error: {e}")
             return "OK", 200
-    return "<h1>Bot is online</h1>", 200
+    return "<h1>Bot is online and fixed!</h1>", 200
 
 app = app
