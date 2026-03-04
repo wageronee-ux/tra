@@ -19,7 +19,31 @@ def start(message):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
     first_name = message.from_user.first_name or "User"
+ @bot.message_handler(commands=['ref', 'referral'])
+def referral_menu(message):
+    user_id = message.from_user.id
+    # Получаем username бота динамически
+    bot_info = bot.get_me()
+    bot_username = bot_info.username
+    ref_link = f"https://t.me/{bot_username}?start={user_id}"
     
+    try:
+        # Запрос к базе
+        res = supabase.table("users").select("refs_count").eq("user_id", user_id).execute()
+        
+        if res.data:
+            count = res.data[0].get("refs_count", 0)
+            text = (
+                f"👥 *Реферальное меню*\n\n"
+                f"🔗 Твоя ссылка для приглашения:\n`{ref_link}`\n\n"
+                f"📊 Приглашено друзей: *{count}*"
+            )
+            bot.send_message(message.chat.id, text, parse_mode="Markdown")
+        else:
+            bot.send_message(message.chat.id, "❌ Сначала введи /start")
+    except Exception as e:
+        print(f"Ошибка в реф-меню: {e}")
+        bot.send_message(message.chat.id, "⚠️ Ошибка базы данных.")   
     # Реферальный ID из ссылки вида t.me/bot?start=12345
     ref_id = None
     args = message.text.split()
@@ -64,33 +88,3 @@ def webhook():
         return "OK", 200
     return "Forbidden", 403
 
-@app.route('/')
-def index():
-    return "Status: Online (API Mode)", 200
-    @bot.message_handler(commands=['ref', 'referral'])
-def referral_menu(message):
-    user_id = message.from_user.id
-    # Заменяем 'YOUR_BOT_USERNAME' на имя твоего бота без @
-    # Например: t.me/my_cool_bot?start={user_id}
-    bot_username = bot.get_me().username
-    ref_link = f"https://t.me/{bot_username}?start={user_id}"
-    
-    try:
-        # Получаем данные пользователя из базы
-        res = supabase.table("users").select("refs_count").eq("user_id", user_id).execute()
-        
-        if res.data:
-            count = res.data[0].get("refs_count", 0)
-            text = (
-                f"👥 **Реферальное меню**\n\n"
-                f"🔗 Твоя ссылка для приглашения:\n`{ref_link}`\n\n"
-                f"📊 Приглашено друзей: **{count}**\n"
-                f"🎁 Приглашай друзей и получай бонусы!"
-            )
-            bot.send_message(message.chat.id, text, parse_mode="Markdown")
-        else:
-            bot.reply_to(message, "❌ Сначала нажми /start, чтобы зарегистрироваться.")
-            
-    except Exception as e:
-        print(f"Error in ref menu: {e}")
-        bot.send_message(message.chat.id, "⚠️ Ошибка при получении данных.")
