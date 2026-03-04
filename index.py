@@ -13,12 +13,15 @@ from flask import Flask, request
 # ==========================================
 # ⚙️ КОНФИГУРАЦИЯ (Берем из Vercel)
 # ==========================================
-TOKEN = os.getenv("8769684238:AAGAuYyLQCmWu0xx5hBZiQfSyqA6PLSSv1Q")
-DB_URL = os.getenv("postgresql://postgres:tapokniga1@db.lujltambyhkujxeptyrd.supabase.co:6543/postgres?pgbouncer=true")
-ADMIN_ID = int(os.getenv("-1003851402932", 0))
-CHANNEL_ID = int(os.getenv("-1003851402932", 0))
-LOG_CHANNEL_ID = int(os.getenv("-1003850107854", 0))
-CHANNEL_URL = os.getenv("https://t.me/traffchanel")
+# ==========================================
+# ⚙️ КОНФИГУРАЦИЯ (Берем из Environment Variables)
+# ==========================================
+TOKEN = os.getenv("BOT_TOKEN")
+DB_URL = os.getenv("DATABASE_URL")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", 0))
+CHANNEL_URL = os.getenv("CHANNEL_URL")
 GIF_URL = "https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExYzVjdWl6MnBrdnpza2FhOGRvbjcxMDQ2MzQyNGI5eHV4cGw1MmxpciZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/5zmRYubj7t6H1gxDY7/giphy.gif"
 
 bot = Bot(token=TOKEN)
