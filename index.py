@@ -3,23 +3,31 @@ import psycopg2
 import telebot
 from flask import Flask, request
 
-# 1. Инициализация бота и Flask
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# 1. Инициализация (Имена изменены под твои скриншоты в Vercel)
+TOKEN = os.getenv("BOT_TOKEN")  # Было TELEGRAM_BOT_TOKEN
 DB_URL = os.getenv("DATABASE_URL")
 
-# ФИКС: Очистка строки подключения от параметров, которые не понимает psycopg2
+# Проверка токена (чтобы бот не падал с непонятной ошибкой)
+if not TOKEN:
+    print("CRITICAL ERROR: BOT_TOKEN is not found in Environment Variables!")
+    # Создаем заглушку, чтобы Flask запустился и выдал ошибку в логи, а не просто упал
+    bot = None
+else:
+    bot = telebot.TeleBot(TOKEN, threaded=False)
+
+app = Flask(__name__)
+
+# 2. Очистка URL базы данных
 if DB_URL and "pgbouncer=true" in DB_URL:
     DB_URL = DB_URL.replace("?pgbouncer=true", "").replace("&pgbouncer=true", "")
 
-bot = telebot.TeleBot(TOKEN, threaded=False)
-app = Flask(__name__)
-
-# 2. Функция инициализации базы данных
 def init_db():
+    if not DB_URL:
+        print("DATABASE_URL is missing!")
+        return
     try:
         with psycopg2.connect(DB_URL) as conn:
             with conn.cursor() as cur:
-                # Создаем таблицу, если её нет
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -30,72 +38,49 @@ def init_db():
                     );
                 """)
                 conn.commit()
-        print("БАЗА ДАННЫХ: Таблицы проверены/созданы успешно.")
     except Exception as e:
-        print(f"ОШИБКА БД при инициализации: {e}")
+        print(f"DB Init Error: {e}")
 
-# Запускаем проверку БД при старте приложения
 init_db()
 
-# 3. Обработчик команды /start
-@bot.message_handler(commands=['start'])
-def start(message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    first_name = message.from_user.first_name
-    
-    # Извлекаем ID реферера из команды /start (например, /start 12345)
-    text_parts = message.text.split()
-    referrer_id = None
-    if len(text_parts) > 1 and text_parts[1].isdigit():
-        referrer_id = int(text_parts[1])
-        if referrer_id == user_id: # Нельзя пригласить самого себя
-            referrer_id = None
+# 3. Обработчики (только если бот инициализирован)
+if bot:
+    @bot.message_handler(commands=['start'])
+    def start(message):
+        user_id = message.from_user.id
+        # Извлекаем ID реферера
+        text_parts = message.text.split()
+        referrer_id = int(text_parts[1]) if len(text_parts) > 1 and text_parts[1].isdigit() else None
+        if referrer_id == user_id: referrer_id = None
 
-    try:
-        with psycopg2.connect(DB_URL) as conn:
-            with conn.cursor() as cur:
-                # Проверяем, есть ли пользователь
-                cur.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
-                if cur.fetchone() is None:
-                    # Добавляем нового пользователя
-                    cur.execute("""
-                        INSERT INTO users (user_id, username, first_name, referrer_id)
-                        VALUES (%s, %s, %s, %s)
-                    """, (user_id, username, first_name, referrer_id))
-                    
-                    # Если есть реферер, обновляем ему счетчик
-                    if referrer_id:
-                        cur.execute("UPDATE users SET refs_count = refs_count + 1 WHERE user_id = %s", (referrer_id,))
-                    
-                    conn.commit()
-                    bot.reply_to(message, f"Добро пожаловать, {first_name}! Вы зарегистрированы.")
-                else:
-                    bot.reply_to(message, "Вы уже зарегистрированы в системе.")
-    except Exception as e:
-        print(f"ОШИБКА при регистрации пользователя: {e}")
-        bot.reply_to(message, "Произошла ошибка при работе с базой данных.")
+        try:
+            with psycopg2.connect(DB_URL) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
+                    if cur.fetchone() is None:
+                        cur.execute("INSERT INTO users (user_id, username, first_name, referrer_id) VALUES (%s, %s, %s, %s)",
+                                    (user_id, message.from_user.username, message.from_user.first_name, referrer_id))
+                        if referrer_id:
+                            cur.execute("UPDATE users SET refs_count = refs_count + 1 WHERE user_id = %s", (referrer_id,))
+                        conn.commit()
+                        bot.reply_to(message, "Регистрация прошла успешно!")
+                    else:
+                        bot.reply_to(message, "Вы уже в системе.")
+        except Exception as e:
+            bot.reply_to(message, "Ошибка базы данных.")
 
-# 4. Основной Webhook обработчик
+# 4. Webhook
 @app.route('/', methods=['POST'])
 def webhook():
+    if not bot:
+        return "Bot token missing", 500
     if request.headers.get('content-type') == 'application/json':
-        try:
-            json_string = request.get_data().decode('utf-8')
-            update = telebot.types.Update.de_json(json_string)
-            bot.process_new_updates([update])
-            return "OK", 200
-        except Exception as e:
-            print(f"ОШИБКА обработки Update: {e}")
-            # Возвращаем 200, чтобы Telegram не слал это проблемное сообщение вечно
-            return "Error Handled", 200
-    else:
-        return "Invalid Request", 403
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return "OK", 200
+    return "Forbidden", 403
 
 @app.route('/')
 def index():
-    return "Bot is running...", 200
-
-# Для локального запуска
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    return "Bot is active" if bot else "Bot is misconfigured (check token)", 200
