@@ -1,27 +1,25 @@
-import asyncio
 import os
 import psycopg2
+import telebot
 from flask import Flask, request
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandObject, Command
 
-app = Flask(__name__)
-
-# --- НАСТРОЙКИ ---
-TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 5602492161 # Твой ID
+# 1. Инициализация бота и Flask
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-admin_states = {}
+# ФИКС: Очистка строки подключения от параметров, которые не понимает psycopg2
+if DB_URL and "pgbouncer=true" in DB_URL:
+    DB_URL = DB_URL.replace("?pgbouncer=true", "").replace("&pgbouncer=true", "")
 
-# Инициализация таблицы при старте
+bot = telebot.TeleBot(TOKEN, threaded=False)
+app = Flask(__name__)
+
+# 2. Функция инициализации базы данных
 def init_db():
     try:
         with psycopg2.connect(DB_URL) as conn:
             with conn.cursor() as cur:
+                # Создаем таблицу, если её нет
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -32,82 +30,72 @@ def init_db():
                     );
                 """)
                 conn.commit()
+        print("БАЗА ДАННЫХ: Таблицы проверены/созданы успешно.")
     except Exception as e:
-        print(f"Ошибка БД: {e}")
+        print(f"ОШИБКА БД при инициализации: {e}")
 
-# --- КЛАВИАТУРЫ ---
-def main_menu(user_id):
-    kb = [
-        [InlineKeyboardButton(text="🔗 Моя ссылка", callback_data="my_ref")],
-        [InlineKeyboardButton(text="🏆 ТОП по никам", callback_data="show_top")]
-    ]
-    if user_id == ADMIN_ID:
-        kb.append([InlineKeyboardButton(text="⚙️ Админка", callback_data="admin_panel")])
-    return InlineKeyboardMarkup(inline_keyboard=kb)
-
-# --- ОБРАБОТЧИКИ ---
-@dp.message(Command("start"))
-async def start(message: types.Message, command: CommandObject):
-    user_id = message.from_user.id
-    username = message.from_user.username or "Unknown"
-    first_name = message.from_user.first_name
-    
-    with psycopg2.connect(DB_URL) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
-            if not cur.fetchone():
-                ref_id = int(command.args) if command.args and command.args.isdigit() else None
-                cur.execute(
-                    "INSERT INTO users (user_id, username, first_name, referrer_id) VALUES (%s, %s, %s, %s)",
-                    (user_id, username, first_name, ref_id)
-                )
-                if ref_id:
-                    cur.execute("UPDATE users SET refs_count = refs_count + 1 WHERE user_id = %s", (ref_id,))
-                conn.commit()
-
-    await message.answer("🚀 Привет! Бот работает на Postgres.", reply_markup=main_menu(user_id))
-
-@dp.callback_query()
-async def actions(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    if call.data == "my_ref":
-        me = await bot.get_me()
-        with psycopg2.connect(DB_URL) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT refs_count FROM users WHERE user_id = %s", (user_id,))
-                res = cur.fetchone()
-                count = res[0] if res else 0
-        await call.message.answer(f"💎 Рефералов: {count}\n🔗 Ссылка: https://t.me/{me.username}?start={user_id}")
-    
-    elif call.data == "admin_panel":
-        admin_states[ADMIN_ID] = "waiting"
-        await call.message.answer("🛠 Режим рассылки включен. Отправь сообщение!")
-
-@dp.message()
-async def handle_all(message: types.Message):
-    if message.from_user.id == ADMIN_ID and admin_states.get(ADMIN_ID) == "waiting":
-        admin_states[ADMIN_ID] = None
-        with psycopg2.connect(DB_URL) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT user_id FROM users")
-                users = cur.fetchall()
-        for u in users:
-            try: await message.copy_to(u[0])
-            except: continue
-        await message.answer("✅ Рассылка готова!")
-    else:
-        await message.answer("Используй кнопки меню.", reply_markup=main_menu(message.from_user.id))
-
-# --- VERCEL ---
+# Запускаем проверку БД при старте приложения
 init_db()
 
-async def process_event(update_dict):
-    update = Update.model_validate(update_dict, context={"bot": bot})
-    try: await dp.feed_update(bot, update)
-    finally: await bot.session.close()
+# 3. Обработчик команды /start
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    first_name = message.from_user.first_name
+    
+    # Извлекаем ID реферера из команды /start (например, /start 12345)
+    text_parts = message.text.split()
+    referrer_id = None
+    if len(text_parts) > 1 and text_parts[1].isdigit():
+        referrer_id = int(text_parts[1])
+        if referrer_id == user_id: # Нельзя пригласить самого себя
+            referrer_id = None
 
-@app.route('/', methods=['POST', 'GET'])
+    try:
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as cur:
+                # Проверяем, есть ли пользователь
+                cur.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
+                if cur.fetchone() is None:
+                    # Добавляем нового пользователя
+                    cur.execute("""
+                        INSERT INTO users (user_id, username, first_name, referrer_id)
+                        VALUES (%s, %s, %s, %s)
+                    """, (user_id, username, first_name, referrer_id))
+                    
+                    # Если есть реферер, обновляем ему счетчик
+                    if referrer_id:
+                        cur.execute("UPDATE users SET refs_count = refs_count + 1 WHERE user_id = %s", (referrer_id,))
+                    
+                    conn.commit()
+                    bot.reply_to(message, f"Добро пожаловать, {first_name}! Вы зарегистрированы.")
+                else:
+                    bot.reply_to(message, "Вы уже зарегистрированы в системе.")
+    except Exception as e:
+        print(f"ОШИБКА при регистрации пользователя: {e}")
+        bot.reply_to(message, "Произошла ошибка при работе с базой данных.")
+
+# 4. Основной Webhook обработчик
+@app.route('/', methods=['POST'])
 def webhook():
-    if request.method == 'POST':
-        asyncio.run(process_event(request.get_json()))
-    return "OK", 200
+    if request.headers.get('content-type') == 'application/json':
+        try:
+            json_string = request.get_data().decode('utf-8')
+            update = telebot.types.Update.de_json(json_string)
+            bot.process_new_updates([update])
+            return "OK", 200
+        except Exception as e:
+            print(f"ОШИБКА обработки Update: {e}")
+            # Возвращаем 200, чтобы Telegram не слал это проблемное сообщение вечно
+            return "Error Handled", 200
+    else:
+        return "Invalid Request", 403
+
+@app.route('/')
+def index():
+    return "Bot is running...", 200
+
+# Для локального запуска
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
