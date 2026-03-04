@@ -3,7 +3,7 @@ import telebot
 from flask import Flask, request
 from supabase import create_client, Client
 
-# --- КОНФИГУРАЦИЯ ---
+# Настройки
 TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -13,86 +13,101 @@ bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- КЛАВИАТУРА (REPLY МЕНЮ) ---
-def main_menu_keyboard(user_id):
+# --- ГЛАВНОЕ МЕНЮ (REPLY КЛАВИАТУРА) ---
+def get_main_menu(user_id):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(telebot.types.KeyboardButton("👤 Мой профиль"))
     markup.add(telebot.types.KeyboardButton("🏆 ТОП лидеров"), telebot.types.KeyboardButton("🔗 Реф. ссылка"))
-    markup.add(telebot.types.KeyboardButton("💸 Вывести $"))
+    markup.add(telebot.types.KeyboardButton("💸 Вывести средства"))
+    
     if user_id == ADMIN_ID:
         markup.add(telebot.types.KeyboardButton("⚙️ Админ-панель"))
     return markup
 
 # --- ОБРАБОТЧИК /START ---
 @bot.message_handler(commands=['start'])
-def start(message):
-    uid = str(message.from_user.id) # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: всегда строка
+def start_command(message):
+    user_id_str = str(message.from_user.id) # ПРЕВРАЩАЕМ В СТРОКУ ДЛЯ SUPABASE
     try:
-        res = supabase.table("users").select("user_id").eq("user_id", uid).execute()
+        # Проверяем наличие пользователя
+        user_data = supabase.table("users").select("*").eq("user_id", user_id_str).execute()
         
-        if not res.data:
-            ref_id = None
+        if not user_data.data:
+            # Логика регистрации
+            referrer = None
             args = message.text.split()
-            if len(args) > 1 and args[1] != uid:
-                ref_id = args[1]
-            
+            if len(args) > 1 and args[1] != user_id_str:
+                referrer = args[1]
+
             supabase.table("users").insert({
-                "user_id": uid,
-                "username": message.from_user.username or "none",
-                "first_name": message.from_user.first_name or "User",
+                "user_id": user_id_str,
+                "username": message.from_user.username or "NoUser",
+                "first_name": message.from_user.first_name,
                 "balance": 0.0,
                 "refs_count": 0,
-                "referrer_id": ref_id
+                "referrer_id": referrer
             }).execute()
-            
-            if ref_id:
-                # Начисляем бонус пригласителю
-                r_res = supabase.table("users").select("balance", "refs_count").eq("user_id", str(ref_id)).execute()
-                if r_res.data:
-                    new_bal = float(r_res.data[0]['balance']) + 0.1
-                    new_count = int(r_res.data[0]['refs_count']) + 1
-                    supabase.table("users").update({"balance": new_bal, "refs_count": new_count}).eq("user_id", str(ref_id)).execute()
 
-        welcome = f"👋 Привет, {message.from_user.first_name}!\n────────────────────\nИспользуй меню ниже для навигации 👇"
-        bot.send_message(message.chat.id, welcome, reply_markup=main_menu_keyboard(message.from_user.id), parse_mode="Markdown")
+            # Если есть реферер - начисляем бонус
+            if referrer:
+                ref_res = supabase.table("users").select("balance", "refs_count").eq("user_id", str(referrer)).execute()
+                if ref_res.data:
+                    new_bal = float(ref_res.data[0]['balance']) + 0.1
+                    new_cnt = int(ref_res.data[0]['refs_count']) + 1
+                    supabase.table("users").update({"balance": new_bal, "refs_count": new_cnt}).eq("user_id", str(referrer)).execute()
+
+        welcome_msg = (
+            f"👋 **Привет, {message.from_user.first_name}!**\n"
+            f"────────────────────\n"
+            f"Добро пожаловать в нашу партнерскую сеть.\n"
+            f"Используйте меню ниже для навигации."
+        )
+        bot.send_message(message.chat.id, welcome_msg, reply_markup=get_main_menu(message.from_user.id), parse_mode="Markdown")
     except Exception as e:
-        print(f"Error in start: {e}")
+        print(f"Start Error: {e}")
 
-# --- ОБРАБОТКА ТЕКСТОВЫХ КНОПОК ---
-@bot.message_handler(func=lambda m: True)
-def handle_menu(message):
+# --- ОБРАБОТКА НАЖАТИЙ КНОПОК МЕНЮ ---
+@bot.message_handler(func=lambda message: True)
+def handle_text_buttons(message):
     uid = str(message.from_user.id)
     cid = message.chat.id
 
     try:
         if message.text == "👤 Мой профиль":
-            res = supabase.table("users").select("balance, refs_count").eq("user_id", uid).execute()
+            res = supabase.table("users").select("balance", "refs_count").eq("user_id", uid).execute()
             if res.data:
-                d = res.data[0]
-                text = (f"👤 **ВАШ ПРОФИЛЬ**\n────────────────────\n"
-                        f"💰 **Баланс:** `{d['balance']}$` \n"
-                        f"👥 **Рефералы:** `{d['refs_count']}` чел.")
+                data = res.data[0]
+                text = (
+                    f"👤 **ВАШ ПРОФИЛЬ**\n"
+                    f"────────────────────\n"
+                    f"💰 **Баланс:** `{data['balance']}$` \n"
+                    f"👥 **Рефералы:** `{data['refs_count']}` чел.\n"
+                    f"────────────────────\n"
+                    f"💳 Статус: **Активен**"
+                )
                 bot.send_message(cid, text, parse_mode="Markdown")
 
         elif message.text == "🔗 Реф. ссылка":
-            b_info = bot.get_me()
-            link = f"https://t.me/{b_info.username}?start={uid}"
-            bot.send_message(cid, f"🔗 **Ваша ссылка:**\n`{link}`", parse_mode="Markdown")
+            bot_name = bot.get_me().username
+            link = f"https://t.me/{bot_name}?start={uid}"
+            text = f"🔗 **Ваша ссылка для приглашений:**\n\n`{link}`"
+            bot.send_message(cid, text, parse_mode="Markdown")
 
         elif message.text == "🏆 ТОП лидеров":
-            res = supabase.table("users").select("first_name, refs_count").order("refs_count", desc=True).limit(10).execute()
-            top = "🏆 **ТОП 10 ЛИДЕРОВ**\n────────────────────\n"
+            res = supabase.table("users").select("first_name", "refs_count").order("refs_count", desc=True).limit(10).execute()
+            top_text = "🏆 **ТОП 10 ПРИГЛАСИТЕЛЕЙ**\n"
+            top_text += "────────────────────\n"
             for i, u in enumerate(res.data, 1):
-                top += f"{i}. {u['first_name']} — `{u['refs_count']}` чел.\n"
-            bot.send_message(cid, top, parse_mode="Markdown")
+                top_text += f"{i}. {u['first_name']} — `{u['refs_count']}` чел.\n"
+            bot.send_message(cid, top_text, parse_mode="Markdown")
 
-        elif message.text == "💸 Вывести $":
-            bot.send_message(cid, "❌ **Ошибка**\nМинимальный вывод: `10$`\nВаш баланс слишком мал.", parse_mode="Markdown")
+        elif message.text == "💸 Вывести средства":
+            bot.send_message(cid, "❌ **Ошибка**\nМинимальная сумма для вывода: `10$`")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Menu Error: {e}")
 
-# --- FLASK WEBHOOK ---
+# --- WEBHOOK SETUP ---
 @app.route('/', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
