@@ -10,29 +10,30 @@ app = Flask(__name__)
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 5602492161 # !!! ЗАМЕНИ НА СВОЙ ID (цифрами)
+ADMIN_ID = 5602492161 # Твой ID
 DB_URL = os.getenv("DATABASE_URL")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
-# --- РАБОТА С БАЗОЙ ДАННЫХ ---
-def init_db():
-    with psycopg2.connect(DB_URL) as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    referrer_id BIGINT,
-                    refs_count INTEGER DEFAULT 0
-                );
-            """)
-            conn.commit()
-
-# Функция для рассылки (состояние в памяти Vercel)
 admin_states = {}
+
+# Инициализация таблицы при старте
+def init_db():
+    try:
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id BIGINT PRIMARY KEY,
+                        username TEXT,
+                        first_name TEXT,
+                        referrer_id BIGINT,
+                        refs_count INTEGER DEFAULT 0
+                    );
+                """)
+                conn.commit()
+    except Exception as e:
+        print(f"Ошибка БД: {e}")
 
 # --- КЛАВИАТУРЫ ---
 def main_menu(user_id):
@@ -45,7 +46,6 @@ def main_menu(user_id):
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 # --- ОБРАБОТЧИКИ ---
-
 @dp.message(Command("start"))
 async def start(message: types.Message, command: CommandObject):
     user_id = message.from_user.id
@@ -65,16 +65,11 @@ async def start(message: types.Message, command: CommandObject):
                     cur.execute("UPDATE users SET refs_count = refs_count + 1 WHERE user_id = %s", (ref_id,))
                 conn.commit()
 
-    await message.answer_animation(
-        animation="https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNHJueGZ3bmZ3bmZ3bmZ3/3o7abKhOpu0NPGVYSE/giphy.gif",
-        caption=f"🚀 Привет, {first_name}! Твой профиль сохранен в Supabase.",
-        reply_markup=main_menu(user_id)
-    )
+    await message.answer("🚀 Привет! Бот работает на Postgres.", reply_markup=main_menu(user_id))
 
 @dp.callback_query()
 async def actions(call: types.CallbackQuery):
     user_id = call.from_user.id
-    
     if call.data == "my_ref":
         me = await bot.get_me()
         with psycopg2.connect(DB_URL) as conn:
@@ -82,47 +77,29 @@ async def actions(call: types.CallbackQuery):
                 cur.execute("SELECT refs_count FROM users WHERE user_id = %s", (user_id,))
                 res = cur.fetchone()
                 count = res[0] if res else 0
-        
-        link = f"https://t.me/{me.username}?start={user_id}"
-        await call.message.edit_caption(caption=f"💎 Рефералов: {count}\n🔗 Ссылка: `{link}`", parse_mode="Markdown", reply_markup=main_menu(user_id))
-
-    elif call.data == "show_top":
-        with psycopg2.connect(DB_URL) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT username, refs_count FROM users ORDER BY refs_count DESC LIMIT 10")
-                rows = cur.fetchall()
-        
-        text = "🏆 **ТОП 10:**\n\n" + "\n".join([f"{i+1}. @{r[0]} — {r[1]}" for i, r in enumerate(rows)])
-        await call.message.edit_caption(caption=text, parse_mode="Markdown", reply_markup=main_menu(user_id))
-
+        await call.message.answer(f"💎 Рефералов: {count}\n🔗 Ссылка: https://t.me/{me.username}?start={user_id}")
+    
     elif call.data == "admin_panel":
         admin_states[ADMIN_ID] = "waiting"
-        await call.message.edit_caption(caption="🛠 Админка\n\nПришли текст/фото для рассылки всем!", reply_markup=main_menu(user_id))
+        await call.message.answer("🛠 Режим рассылки включен. Отправь сообщение!")
 
 @dp.message()
-async def broadcast(message: types.Message):
+async def handle_all(message: types.Message):
     if message.from_user.id == ADMIN_ID and admin_states.get(ADMIN_ID) == "waiting":
         admin_states[ADMIN_ID] = None
-        
         with psycopg2.connect(DB_URL) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT user_id FROM users")
                 users = cur.fetchall()
-        
-        success = 0
         for u in users:
-            try:
-                await message.copy_to(u[0])
-                success += 1
-                await asyncio.sleep(0.05)
+            try: await message.copy_to(u[0])
             except: continue
-            
-        await message.answer(f"✅ Рассылка завершена! Получили: {success} чел.")
+        await message.answer("✅ Рассылка готова!")
     else:
-        await message.answer("Используй меню 👇", reply_markup=main_menu(message.from_user.id))
+        await message.answer("Используй кнопки меню.", reply_markup=main_menu(message.from_user.id))
 
 # --- VERCEL ---
-init_db() # Создаем таблицу при запуске
+init_db()
 
 async def process_event(update_dict):
     update = Update.model_validate(update_dict, context={"bot": bot})
