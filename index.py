@@ -3,30 +3,41 @@ import psycopg2
 import telebot
 from flask import Flask, request
 
-# 1. Инициализация (Имена изменены под твои скриншоты в Vercel)
-TOKEN = os.getenv("BOT_TOKEN")  # Было TELEGRAM_BOT_TOKEN
+# 1. Настройка переменных (имена как в твоем Vercel)
+TOKEN = os.getenv("BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
 
-# Проверка токена (чтобы бот не падал с непонятной ошибкой)
+# Проверка наличия токена, чтобы бот не падал с ошибкой итерации
 if not TOKEN:
-    print("CRITICAL ERROR: BOT_TOKEN is not found in Environment Variables!")
-    # Создаем заглушку, чтобы Flask запустился и выдал ошибку в логи, а не просто упал
+    print("Ошибка: BOT_TOKEN не найден в Environment Variables!")
     bot = None
 else:
     bot = telebot.TeleBot(TOKEN, threaded=False)
 
 app = Flask(__name__)
 
-# 2. Очистка URL базы данных
-if DB_URL and "pgbouncer=true" in DB_URL:
-    DB_URL = DB_URL.replace("?pgbouncer=true", "").replace("&pgbouncer=true", "")
-
-def init_db():
+# 2. Функция для очистки и исправления URL базы данных
+def get_db_connection():
     if not DB_URL:
-        print("DATABASE_URL is missing!")
-        return
+        return None
+    
+    # Исправляем протокол postgres:// на postgresql:// для psycopg2
+    temp_url = DB_URL
+    if temp_url.startswith("postgres://"):
+        temp_url = temp_url.replace("postgres://", "postgresql://", 1)
+    
+    # Убираем параметры pgbouncer, если они есть (они мешают прямому подключению)
+    clean_url = temp_url.split("?")[0]
+    
+    # Подключаемся с SSL (часто требуется для внешних баз типа Supabase/Render)
+    return psycopg2.connect(clean_url, sslmode='require')
+
+# 3. Создание таблицы при запуске
+def init_db():
+    conn = None
     try:
-        with psycopg2.connect(DB_URL) as conn:
+        conn = get_db_connection()
+        if conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS users (
@@ -38,38 +49,58 @@ def init_db():
                     );
                 """)
                 conn.commit()
+                print("База данных готова.")
     except Exception as e:
-        print(f"DB Init Error: {e}")
+        print(f"Ошибка инициализации БД: {e}")
+    finally:
+        if conn: conn.close()
 
 init_db()
 
-# 3. Обработчики (только если бот инициализирован)
+# 4. Обработка команды /start
 if bot:
     @bot.message_handler(commands=['start'])
     def start(message):
         user_id = message.from_user.id
-        # Извлекаем ID реферера
+        username = message.from_user.username
+        first_name = message.from_user.first_name
+        
+        # Получаем ID пригласившего из ссылки (если есть)
         text_parts = message.text.split()
-        referrer_id = int(text_parts[1]) if len(text_parts) > 1 and text_parts[1].isdigit() else None
-        if referrer_id == user_id: referrer_id = None
+        referrer_id = None
+        if len(text_parts) > 1 and text_parts[1].isdigit():
+            referrer_id = int(text_parts[1])
+        
+        # Защита: нельзя пригласить самого себя
+        if referrer_id == user_id:
+            referrer_id = None
 
+        conn = None
         try:
-            with psycopg2.connect(DB_URL) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
-                    if cur.fetchone() is None:
-                        cur.execute("INSERT INTO users (user_id, username, first_name, referrer_id) VALUES (%s, %s, %s, %s)",
-                                    (user_id, message.from_user.username, message.from_user.first_name, referrer_id))
-                        if referrer_id:
-                            cur.execute("UPDATE users SET refs_count = refs_count + 1 WHERE user_id = %s", (referrer_id,))
-                        conn.commit()
-                        bot.reply_to(message, "Регистрация прошла успешно!")
-                    else:
-                        bot.reply_to(message, "Вы уже в системе.")
+            conn = get_db_connection()
+            with conn.cursor() as cur:
+                # Проверяем, есть ли юзер
+                cur.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
+                if cur.fetchone() is None:
+                    # Регистрация нового
+                    cur.execute(
+                        "INSERT INTO users (user_id, username, first_name, referrer_id) VALUES (%s, %s, %s, %s)",
+                        (user_id, username, first_name, referrer_id)
+                    )
+                    # Если есть реферер, прибавляем ему счетчик
+                    if referrer_id:
+                        cur.execute("UPDATE users SET refs_count = refs_count + 1 WHERE user_id = %s", (referrer_id,))
+                    
+                    conn.commit()
+                    bot.reply_to(message, f"Добро пожаловать, {first_name}! Вы зарегистрированы.")
+                else:
+                    bot.reply_to(message, "Вы уже зарегистрированы в системе.")
         except Exception as e:
-            bot.reply_to(message, "Ошибка базы данных.")
+            bot.reply_to(message, f"Ошибка базы данных: {str(e)}")
+        finally:
+            if conn: conn.close()
 
-# 4. Webhook
+# 5. Маршруты для Vercel (Webhook)
 @app.route('/', methods=['POST'])
 def webhook():
     if not bot:
@@ -83,4 +114,5 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Bot is active" if bot else "Bot is misconfigured (check token)", 200
+    status = "работает" if bot else "не настроен (проверь токен)"
+    return f"Бот {status}", 200
