@@ -5,34 +5,39 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import Update
 from aiogram.filters import Command
 
-# Настройка Flask
+# 1. Настройка Flask (чтобы Vercel видел веб-сервер)
 app = Flask(__name__)
 
-# Инициализация бота и диспетчера
+# 2. Инициализация бота (токен берется из переменных окружения Vercel)
 TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Обработчик команды /start
-@dp.message(Command("start"))
-async def start_command(message: types.Message):
-    await message.answer("🚀 Бот успешно запущен в Vercel!")
+# --- ТВОИ ОБРАБОТЧИКИ ТУТ ---
 
-# Эхо-обработчик для проверки связи
+@dp.message(Command("start"))
+async def start_handler(message: types.Message):
+    await message.answer("✅ Бот запущен и работает на Vercel!")
+
 @dp.message()
 async def echo_handler(message: types.Message):
-    await message.answer(f"🤖 Ты написал: {message.text}")
+    # Бот будет просто повторять текст, чтобы ты видел, что он живой
+    await message.answer(f"🤖 Получил: {message.text}")
 
-# Главный роут для Vercel
+# --- ЛОГИКА ДЛЯ VERCEL ---
+
 @app.route('/', methods=['POST', 'GET'])
 def webhook():
     if request.method == 'POST':
-        # Получаем данные от Telegram
-        update_data = request.get_json()
-        update = Update.model_validate(update_data, context={"bot": bot})
-        
-        # Запускаем обработку события в текущем цикле
-        asyncio.run(dp.feed_update(bot, update))
+        update_dict = request.get_json()
+        if update_dict:
+            update = Update.model_validate(update_dict, context={"bot": bot})
+            # Запускаем обработку события
+            asyncio.run(dp.feed_update(bot, update))
         return "OK", 200
-    
-    return "<h1>Bot is alive!</h1>", 200
+    return "Бот работает!", 200
+
+# Заглушка, чтобы в логах не было ошибок 404 (favicon)
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
