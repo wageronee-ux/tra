@@ -5,7 +5,7 @@ from flask import Flask, request
 from supabase import create_client, Client
 
 # --- КОНФИГ ---
-TOKEN = os.getenv("BOT_TOKEN")
+
 ADMIN_ID = 8040642138
 CHANNEL_ID = "@traffchanel"
 CHANNEL_LINK = "https://t.me/traffchanel"
