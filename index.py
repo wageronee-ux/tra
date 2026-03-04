@@ -1,86 +1,59 @@
 import os
-import psycopg2
 import telebot
 from flask import Flask, request
+from supabase import create_client, Client
 
+# Конфигурация
 TOKEN = os.getenv("BOT_TOKEN")
-DB_URL = os.getenv("DATABASE_URL")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-def get_db_connection():
-    if not DB_URL:
-        print("DATABASE_URL не настроен")
-        return None
-    try:
-        # Прямое использование DB_URL, так как мы добавили sslmode в саму строку
-        conn = psycopg2.connect(DB_URL)
-        return conn
-    except Exception as e:
-        print(f"Ошибка подключения к БД: {e}")
-        return None
-
-def init_db():
-    conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id BIGINT PRIMARY KEY,
-                        username TEXT,
-                        first_name TEXT,
-                        referrer_id BIGINT,
-                        refs_count INTEGER DEFAULT 0
-                    );
-                """)
-            conn.commit()
-            print("БД инициализирована успешно")
-        except Exception as e:
-            print(f"Ошибка инициализации БД: {e}")
-        finally:
-            conn.close()
-
-# Инициализируем при запуске
-init_db()
+# Подключаемся через HTTP API (порт 443)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
-    ref_id = None
+    username = message.from_user.username or "Unknown"
+    first_name = message.from_user.first_name or "User"
     
+    # Реферальный ID из ссылки вида t.me/bot?start=12345
+    ref_id = None
     args = message.text.split()
     if len(args) > 1 and args[1].isdigit():
         ref_id = int(args[1])
-    
-    if ref_id == user_id: 
-        ref_id = None
-
-    conn = get_db_connection()
-    if not conn:
-        bot.reply_to(message, "⚠️ Сервис временно недоступен (ошибка БД).")
-        return
+    if ref_id == user_id: ref_id = None
 
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
-            if cur.fetchone() is None:
-                cur.execute(
-                    "INSERT INTO users (user_id, username, first_name, referrer_id) VALUES (%s, %s, %s, %s)",
-                    (user_id, message.from_user.username, message.from_user.first_name, ref_id)
-                )
-                if ref_id:
-                    cur.execute("UPDATE users SET refs_count = refs_count + 1 WHERE user_id = %s", (ref_id,))
-                conn.commit()
-                bot.reply_to(message, "✅ Вы успешно зарегистрированы!")
-            else:
-                bot.reply_to(message, "С возвращением! Вы уже зарегистрированы.")
+        # Проверяем наличие пользователя в таблице 'users'
+        res = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
+        
+        if not res.data:
+            # Создаем запись
+            supabase.table("users").insert({
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "referrer_id": ref_id
+            }).execute()
+            
+            # Если есть реферер, прибавляем ему +1
+            if ref_id:
+                ref_res = supabase.table("users").select("refs_count").eq("user_id", ref_id).execute()
+                if ref_res.data:
+                    old_count = ref_res.data[0].get("refs_count") or 0
+                    supabase.table("users").update({"refs_count": old_count + 1}).eq("user_id", ref_id).execute()
+            
+            bot.reply_to(message, f"✨ Привет, {first_name}! Ты успешно зарегистрирован.")
+        else:
+            bot.reply_to(message, "Ты уже в игре! Используй меню для навигации.")
+            
     except Exception as e:
-        print(f"Ошибка запроса: {e}")
-        bot.reply_to(message, "Произошла ошибка при регистрации.")
-    finally:
-        conn.close()
+        print(f"Supabase Error: {e}")
+        bot.reply_to(message, "⚠️ Ошибка базы данных. Попробуй позже.")
 
 @app.route('/', methods=['POST'])
 def webhook():
@@ -93,4 +66,4 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Статус: Бот работает", 200
+    return "Status: Online (API Mode)", 200
