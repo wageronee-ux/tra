@@ -1,26 +1,48 @@
 import asyncio
-from flask import Flask, request, jsonify
+import os
+from flask import Flask, request
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Update
-import os
 
+# Инициализация Flask
 app = Flask(__name__)
+
+# Инициализация бота (токен берется из переменных окружения Vercel)
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 dp = Dispatcher()
 
-# Твой обработчик
+# --- ТВОИ ХЕНДЛЕРЫ ТУТ ---
+
+@dp.message(lambda message: message.text == "/start")
+async def send_welcome(message: types.Message):
+    await message.answer("Привет! Я работаю на Vercel 🚀")
+
 @dp.message()
-async def handle_message(message: types.Message):
-    await message.answer("Бот работает через Vercel! 🚀")
+async def echo_all(message: types.Message):
+    # Этот хендлер ловит всё остальное, чтобы не было ошибок "not handled"
+    await message.answer(f"Ты написал: {message.text}")
+
+# --- ОБРАБОТКА WEBHOOK ---
 
 @app.route('/', methods=['POST', 'GET'])
 def webhook():
     if request.method == 'POST':
-        update = Update.model_validate(request.get_json(), context={"bot": bot})
-        # Запуск обработки
-        asyncio.run(dp.feed_update(bot, update))
-        return "OK", 200
-    return "Bot is alive", 200
+        try:
+            # Получаем данные от Telegram
+            data = request.get_json()
+            update = Update.model_validate(data, context={"bot": bot})
+            
+            # Запускаем обработку события
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(dp.feed_update(bot, update))
+            
+            return "OK", 200
+        except Exception as e:
+            print(f"Error processing update: {e}")
+            return "OK", 200 # Возвращаем 200, чтобы остановить повторы от Telegram
+    
+    return "Bot is running...", 200
 
-# Для Vercel обязательно
+# Экспортируем app для Vercel
 app = app
