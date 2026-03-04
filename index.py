@@ -1,39 +1,39 @@
 import asyncio
 import os
 from flask import Flask, request
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import Update
-from aiogram.filters import Command # Важно для работы /start
+from aiogram.filters import Command
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
 
-# Инициализация Flask
 app = Flask(__name__)
 
-# Инициализация бота (токен берется из переменных окружения Vercel)
-TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+# Используем MemoryStorage для временного хранения состояний
+bot = Bot(token=os.getenv("BOT_TOKEN"))
+dp = Dispatcher(storage=MemoryStorage())
 
-# --- БЛОК ОБРАБОТЧИКОВ (ХЕНДЛЕРОВ) ---
+# --- ХЕНДЛЕРЫ ---
 
-@dp.message(Command("start"))
-async def send_welcome(message: types.Message):
-    """Реагирует на команду /start"""
-    await message.answer("✅ Бот успешно распознал команду /start и работает на Vercel!")
+# state="*" позволяет команде работать, даже если бот ждет ответа на другой вопрос
+@dp.message(Command("start"), state="*")
+async def send_welcome(message: types.Message, state: FSMContext):
+    """Сбрасывает любое состояние и приветствует пользователя"""
+    await state.clear() # Очищаем состояние
+    await message.answer("✅ Команда /start распознана! Я готов к работе.")
 
 @dp.message(Command("help"))
 async def send_help(message: types.Message):
-    """Реагирует на команду /help"""
-    await message.answer("Я — бот на aiogram 3. Отправь мне любое сообщение!")
+    await message.answer("Отправь /start, если я перестал отвечать.")
 
 @dp.message()
 async def echo_all(message: types.Message):
-    """Ловит все остальные текстовые сообщения"""
-    await message.answer(f"🤖 Получено сообщение: {message.text}")
+    """Ловушка для любого текста"""
+    await message.answer(f"🤖 Ты написал: {message.text}")
 
-# --- ЛОГИКА WEBHOOK (ДЛЯ VERCEL) ---
+# --- ЛОГИКА VERCEL ---
 
 async def process_update(data):
-    """Асинхронная подача данных в диспетчер aiogram"""
     update = Update.model_validate(data, context={"bot": bot})
     await dp.feed_update(bot, update)
 
@@ -41,22 +41,15 @@ async def process_update(data):
 def webhook():
     if request.method == 'POST':
         try:
-            # Читаем данные от Telegram
             data = request.get_json()
-            
-            # В Serverless нужно создавать новый цикл событий для каждого запроса
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(process_update(data))
             loop.close()
-            
             return "OK", 200
         except Exception as e:
-            print(f"Error processing update: {e}")
-            return "OK", 200 # Всегда 200, чтобы не зацикливать ошибки
-    
-    # Ответ для обычного перехода по ссылке в браузере
-    return "<h1>Bot Status: Online</h1>", 200
+            print(f"Error: {e}")
+            return "OK", 200
+    return "<h1>Bot is online</h1>", 200
 
-# Экспортируем для Vercel
 app = app
