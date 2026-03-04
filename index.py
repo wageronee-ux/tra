@@ -7,6 +7,8 @@ from supabase import create_client, Client
 TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+ADMIN_ID = 8040642138  # ЗАМЕНИ на свой Telegram ID
+CHANNEL_ID = "@traffchanel" # ЗАМЕНИ на юзернейм своего канала
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
@@ -14,13 +16,66 @@ app = Flask(__name__)
 # Подключаемся к Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+def check_sub(user_id):
+    try:
+        member = bot.get_chat_member(CHANNEL_ID, user_id)
+        if member.status in ['member', 'administrator', 'creator']:
+            return True
+        return False
+    except Exception:
+        return False
+
+# Клавиатура с кнопкой подписки
+def sub_keyboard():
+    markup = telebot.types.InlineKeyboardMarkup()
+    url_button = telebot.types.InlineKeyboardButton(text="Подписаться на канал", url=f"https://t.me/{CHANNEL_ID.replace('@', '')}")
+    check_button = telebot.types.InlineKeyboardButton(text="✅ Я подписался", callback_data="check_subscription")
+    markup.add(url_button)
+    markup.add(check_button)
+    return markup
+    
 # --- КОМАНДА START ---
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
     first_name = message.from_user.first_name or "User"
+
+    # --- КОМАНДА admin ---
+    @bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    if message.from_user.id != ADMIN_ID:
+        return # Игнорируем, если не админ
+
+    try:
+        # Считаем общее кол-во юзеров в базе
+        res = supabase.table("users").select("user_id", count="exact").execute()
+        total_users = res.count if res.count is not None else 0
+        
+        markup = telebot.types.InlineKeyboardMarkup()
+        btn1 = telebot.types.InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")
+        btn2 = telebot.types.InlineKeyboardButton("📊 Обновить БД", callback_data="admin_db_refresh")
+        markup.add(btn1, btn2)
+        
+        bot.send_message(message.chat.id, f"🛠 **Панель администратора**\n\nВсего пользователей в базе: {total_users}", 
+                         parse_mode="Markdown", reply_markup=markup)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Ошибка админки: {e}")
+
+    #---оброботка кнопок---
+    @bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
     
+    # ПРОВЕРКА ПОДПИСКИ
+    if not check_sub(user_id):
+        bot.send_message(message.chat.id, f"Для использования бота нужно подписаться на наш канал {CHANNEL_ID}!", 
+                         reply_markup=sub_keyboard())
+        return
+
+    # Далее идет твой старый код регистрации (проверка в Supabase и т.д.)
+    # ... (код из предыдущего шага)
+        
     # Реферальный ID из ссылки
     ref_id = None
     args = message.text.split()
@@ -89,6 +144,20 @@ def referral_menu(message):
         print(f"Error in ref menu: {e}")
         bot.send_message(message.chat.id, "⚠️ Ошибка базы данных.")
 
+#---Обработка нажатий на кнопки---
+@bot.callback_query_handler(func=lambda call: True)
+def callback_inline(call):
+    if call.data == "check_subscription":
+        if check_sub(call.from_user.id):
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            bot.send_message(call.message.chat.id, "✅ Спасибо! Теперь введи /start снова.")
+        else:
+            bot.answer_callback_query(call.id, "❌ Ты всё еще не подписан!", show_alert=True)
+            
+    elif call.data == "admin_broadcast":
+        if call.from_user.id == ADMIN_ID:
+            bot.send_message(call.message.chat.id, "Введите текст для рассылки (функция в разработке)")
+            
 # --- ВЕБХУК ДЛЯ VERCEL ---
 @app.route('/', methods=['POST'])
 def webhook():
