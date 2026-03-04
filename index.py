@@ -15,14 +15,7 @@ bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-def check_sub(user_id):
-    try:
-        member = bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status in ['member', 'administrator', 'creator']
-    except:
-        return False
-
+# --- 2. КЛАВИАТУРЫ ---
 def main_keyboard(user_id):
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -45,15 +38,18 @@ def sub_keyboard():
     markup.add(check_button)
     return markup
 
-# --- 3. КОМАНДА START ---
+def check_sub(user_id):
+    try:
+        member = bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except: return False
+
+# --- 3. ОБРАБОТЧИК START ---
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
-    username = message.from_user.username or "Unknown"
-    first_name = message.from_user.first_name or "User"
-
     if not check_sub(user_id):
-        bot.send_message(message.chat.id, f"⚠️ Для доступа подпишитесь на канал {CHANNEL_ID}", reply_markup=sub_keyboard())
+        bot.send_message(message.chat.id, f"⚠️ Подпишись на {CHANNEL_ID}", reply_markup=sub_keyboard())
         return
 
     ref_id = None
@@ -63,52 +59,55 @@ def start(message):
     if ref_id == user_id: ref_id = None
 
     try:
-        res = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
+        # Фикс: используем str(user_id) для стабильности Supabase
+        res = supabase.table("users").select("user_id").eq("user_id", str(user_id)).execute()
         if not res.data:
             supabase.table("users").insert({
-                "user_id": user_id, "username": username, "first_name": first_name,
-                "referrer_id": ref_id, "refs_count": 0, "balance": 0
+                "user_id": user_id, 
+                "username": message.from_user.username or "Unknown", 
+                "first_name": message.from_user.first_name or "User",
+                "referrer_id": ref_id, 
+                "refs_count": 0, 
+                "balance": 0
             }).execute()
             
             if ref_id:
-                ref_res = supabase.table("users").select("refs_count", "balance").eq("user_id", ref_id).execute()
+                ref_res = supabase.table("users").select("refs_count", "balance").eq("user_id", str(ref_id)).execute()
                 if ref_res.data:
-                    new_count = (ref_res.data[0].get("refs_count") or 0) + 1
-                    new_balance = (ref_res.data[0].get("balance") or 0) + 0.1
-                    supabase.table("users").update({"refs_count": new_count, "balance": new_balance}).eq("user_id", ref_id).execute()
-                    try: bot.send_message(ref_id, "🔔 +$0.10 за нового друга!")
-                    except: pass
-            
-            bot.send_message(message.chat.id, f"🚀 Привет, {first_name}! Регистрация завершена.", reply_markup=main_keyboard(user_id))
-        else:
-            bot.send_message(message.chat.id, "🚀 Главное меню:", reply_markup=main_keyboard(user_id))
-    except:
-        bot.send_message(message.chat.id, "⚠️ Ошибка базы данных.")
+                    supabase.table("users").update({
+                        "refs_count": ref_res.data[0]['refs_count'] + 1, 
+                        "balance": ref_res.data[0]['balance'] + 0.1
+                    }).eq("user_id", str(ref_id)).execute()
+        
+        bot.send_message(message.chat.id, "🚀 Меню управления:", reply_markup=main_keyboard(user_id))
+    except Exception as e:
+        print(f"Error: {e}")
+        bot.send_message(message.chat.id, "❌ Ошибка базы данных.")
 
-# --- 4. ОБРАБОТКА КНОПОК (CALLBACK) ---
+# --- 4. ОБРАБОТКА КНОПОК ---
 @bot.callback_query_handler(func=lambda call: True)
-def callback_inline(call):
+def handle_query(call):
     user_id = call.from_user.id
+    # Обязательный ответ на Callback, чтобы кнопка не "висла"
+    bot.answer_callback_query(call.id)
 
     if call.data == "check_subscription":
         if check_sub(user_id):
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-            bot.send_message(call.message.chat.id, "✅ Подписка подтверждена!", reply_markup=main_keyboard(user_id))
+            bot.send_message(call.message.chat.id, "✅ Доступ открыт!", reply_markup=main_keyboard(user_id))
         else:
-            bot.answer_callback_query(call.id, "❌ Ты всё еще не подписан!", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ Ты не подписан!", show_alert=True)
 
     elif call.data == "profile":
-        res = supabase.table("users").select("balance", "refs_count").eq("user_id", user_id).execute()
+        res = supabase.table("users").select("balance", "refs_count").eq("user_id", str(user_id)).execute()
         if res.data:
             d = res.data[0]
-            text = f"👤 **ПРОФИЛЬ**\n\n💰 Баланс: `${d.get('balance', 0):.2f}`\n👥 Рефералов: `{d.get('refs_count', 0)}`"
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard(user_id), parse_mode="Markdown")
+            text = f"👤 **ПРОФИЛЬ**\n\n💰 Баланс: `${d['balance']:.2f}`\n👥 Рефералов: `{d['refs_count']}`"
+            bot.send_message(call.message.chat.id, text, reply_markup=main_keyboard(user_id), parse_mode="Markdown")
 
     elif call.data == "ref_menu":
-        bot_info = bot.get_me()
-        link = f"https://t.me/{bot_info.username}?start={user_id}"
-        text = f"🔗 **Твоя ссылка:**\n`{link}`\n\nПриглашай друзей и получай бонусы!"
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard(user_id), parse_mode="Markdown")
+        me = bot.get_me()
+        link = f"https://t.me/{me.username}?start={user_id}"
+        bot.send_message(call.message.chat.id, f"🔗 **Твоя ссылка:**\n`{link}`", reply_markup=main_keyboard(user_id), parse_mode="Markdown")
 
     elif call.data == "top_list":
         res = supabase.table("users").select("first_name", "refs_count").order("refs_count", desc=True).limit(10).execute()
@@ -116,16 +115,16 @@ def callback_inline(call):
         for i, u in enumerate(res.data, 1):
             m = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "👤"
             text += f"{m} {i}. {u['first_name']} — `{u['refs_count']}` чел.\n"
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=main_keyboard(user_id), parse_mode="Markdown")
+        bot.send_message(call.message.chat.id, text, reply_markup=main_keyboard(user_id), parse_mode="Markdown")
 
     elif call.data == "withdraw_money":
-        res = supabase.table("users").select("balance", "first_name").eq("user_id", user_id).execute()
-        bal = res.data[0].get("balance", 0) if res.data else 0
+        res = supabase.table("users").select("balance").eq("user_id", str(user_id)).execute()
+        bal = res.data[0]['balance'] if res.data else 0
         if bal < 5.0:
-            bot.answer_callback_query(call.id, f"❌ Минимум $5.00 (у тебя ${bal:.2f})", show_alert=True)
+            bot.answer_callback_query(call.id, f"❌ Минимум $5.00", show_alert=True)
         else:
-            bot.send_message(LOG_CHANNEL_ID, f"💸 **ВЫВОД**\nЮзер: {res.data[0]['first_name']} (`{user_id}`)\nСумма: ${bal:.2f}")
-            bot.answer_callback_query(call.id, "✅ Заявка отправлена!", show_alert=True)
+            bot.send_message(LOG_CHANNEL_ID, f"💸 ЗАЯВКА: {user_id} на ${bal:.2f}")
+            bot.send_message(call.message.chat.id, "✅ Заявка отправлена!")
 
 # --- 5. ВЕБХУК ---
 @app.route('/', methods=['POST'])
@@ -133,7 +132,6 @@ def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
-        # ВАЖНО: обрабатываем обновление
         bot.process_new_updates([update])
         return "OK", 200
     return "Forbidden", 403
