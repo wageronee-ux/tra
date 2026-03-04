@@ -14,115 +14,105 @@ bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
-# Кэш подписок (uid: (status, timestamp))
-sub_cache = {}
 user_state = {}
 
-def is_subscribed(uid):
-    now = time.time()
-    if uid in sub_cache and now - sub_cache[uid][1] < 60:
-        return sub_cache[uid][0]
-    
-    try:
-        status = bot.get_chat_member(CHANNEL_ID, uid).status
-        is_sub = status in ['member', 'administrator', 'creator']
-        sub_cache[uid] = (is_sub, now)
-        return is_sub
-    except:
-        return False
-
-def safe_answer(call_id, text=None, alert=False):
-    try:
-        bot.answer_callback_query(call_id, text=text, show_alert=alert)
-    except:
-        pass
-
-# --- ГЛАВНОЕ МЕНЮ ---
-def main_menu():
-    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        telebot.types.InlineKeyboardButton("👤 Профиль", callback_data="p"),
-        telebot.types.InlineKeyboardButton("🏆 ТОП", callback_data="t"),
-        telebot.types.InlineKeyboardButton("🔗 Рефка", callback_data="r"),
-        telebot.types.InlineKeyboardButton("💸 Вывод", callback_data="w")
-    )
+# --- КЛАВИАТУРА ---
+def main_kb():
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("👤 Профиль", "🏆 Топ лидеров")
+    markup.add("🔗 Реф. ссылка", "💸 Вывод средств")
     return markup
 
-@bot.message_handler(commands=['start'])
-def start_cmd(m):
-    uid = str(m.from_user.id)
-    if not is_subscribed(uid):
-        kb = telebot.types.InlineKeyboardMarkup()
-        kb.add(telebot.types.InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK))
-        kb.add(telebot.types.InlineKeyboardButton("✅ Проверить", callback_data="check"))
-        return bot.send_message(m.chat.id, "❌ Доступ закрыт! Подпишись на канал:", reply_markup=kb)
+def sub_kb():
+    # Для подписки используем инлайн (так как нужна ссылка), 
+    # но основное управление будет в Reply.
+    kb = telebot.types.InlineKeyboardMarkup()
+    kb.add(telebot.types.InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_LINK))
+    return kb
 
-    # Оптимизированная регистрация
-    user = supabase.table("users").select("id").eq("user_id", uid).execute().data
+# --- ПРОВЕРКА ПОДПИСКИ ---
+def is_sub(uid):
+    try:
+        s = bot.get_chat_member(CHANNEL_ID, uid).status
+        return s in ['member', 'administrator', 'creator']
+    except: return False
+
+@bot.message_handler(commands=['start'])
+def start(m):
+    uid = str(m.from_user.id)
+    if not is_sub(uid):
+        return bot.send_message(m.chat.id, "👋 **Привет!**\n\nДля работы с ботом подпишись на наш канал:", 
+                                reply_markup=sub_kb(), parse_mode="Markdown")
+
+    # Регистрация
+    user = supabase.table("users").select("user_id").eq("user_id", uid).execute().data
     if not user:
         ref_id = m.text.split()[1] if len(m.text.split()) > 1 else None
-        if ref_id == uid: ref_id = None
-        
         supabase.table("users").insert({
             "user_id": uid, "first_name": m.from_user.first_name,
             "referrer_id": ref_id, "balance": 0, "refs_count": 0
         }).execute()
         
-        if ref_id:
-            # Обновление баланса пригласителя одним запросом
-            supabase.rpc('increment_ref', {'row_id': ref_id}).execute() 
-            # Примечание: RPC - это функция внутри Supabase. Если ее нет, используй стандартный update.
-            try: bot.send_message(ref_id, "💎 +0.50$ за друга!")
-            except: pass
+        if ref_id and ref_id != uid:
+            # Начисление (упрощенное)
+            r_data = supabase.table("users").select("balance, refs_count").eq("user_id", ref_id).execute().data
+            if r_data:
+                supabase.table("users").update({
+                    "balance": float(r_data[0]['balance']) + 0.50,
+                    "refs_count": int(r_data[0]['refs_count']) + 1
+                }).eq("user_id", ref_id).execute()
+                try: bot.send_message(ref_id, "🎁 **У вас новый реферал!** +0.50$", parse_mode="Markdown")
+                except: pass
 
-    bot.send_message(m.chat.id, "🚀 Бот готов к работе!", reply_markup=main_menu())
+    bot.send_message(m.chat.id, "🎯 **Вы в главном меню.**\nИспользуйте кнопки ниже:", reply_markup=main_kb(), parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda c: True)
-def handle_cb(c):
-    uid, cid = str(c.from_user.id), c.message.chat.id
+# --- ОБРАБОТКА ТЕКСТОВЫХ КОМАНД ---
+@bot.message_handler(content_types=['text'])
+def handle_text(m):
+    uid = str(m.from_user.id)
     
-    if c.data == "check":
-        if is_subscribed(uid):
-            bot.edit_message_text("✅ Подписка подтверждена!", cid, c.message.message_id)
-            return start_cmd(c.message)
-        return safe_answer(c.id, "❌ Подписка не найдена!", True)
+    # Сначала проверяем, не ждем ли мы кошелек
+    if user_state.get(uid) == 'wait_w':
+        amount = supabase.table("users").select("balance").eq("user_id", uid).single().execute().data['balance']
+        supabase.table("users").update({"balance": 0}).eq("user_id", uid).execute()
+        bot.send_message(ADMIN_ID, f"💰 **ЗАЯВКА**\nID: `{uid}`\nСумма: `{amount}$`\nРеквизиты: `{m.text}`", parse_mode="Markdown")
+        user_state[uid] = None
+        return bot.send_message(m.chat.id, "✅ **Заявка принята!**\nОжидайте выплату в течение суток.", reply_markup=main_kb(), parse_mode="Markdown")
 
-    if not is_subscribed(uid):
-        return safe_answer(c.id, "❗ Сначала подпишись!", True)
+    if not is_sub(uid):
+        return bot.send_message(m.chat.id, "❗ Сначала подпишись на канал!", reply_markup=sub_kb())
 
-    if c.data == "p":
+    if m.text == "👤 Профиль":
         u = supabase.table("users").select("*").eq("user_id", uid).single().execute().data
-        bot.send_message(cid, f"👤 **Профиль**\n\n💰 Баланс: `{u['balance']}$` \n👥 Рефералов: `{u['refs_count']}`", parse_mode="Markdown")
-    
-    elif c.data == "r":
-        bot.send_message(cid, f"🔗 Ссылка: `https://t.me/{(bot.get_me().username)}?start={uid}`", parse_mode="Markdown")
+        msg = (f"─── **ВАШ ПРОФИЛЬ** ───\n\n"
+               f"👤 Имя: `{u['first_name']}`\n"
+               f"💰 Баланс: `{u['balance']}$`\n"
+               f"👥 Рефералов: `{u['refs_count']}`\n"
+               f"──────────────────")
+        bot.send_message(m.chat.id, msg, parse_mode="Markdown")
 
-    elif c.data == "t":
-        top = supabase.table("users").select("first_name, refs_count").order("refs_count", desc=True).limit(5).execute().data
-        txt = "🏆 **Лидеры:**\n" + "\n".join([f"{i+1}. {x['first_name']} — {x['refs_count']}" for i,x in enumerate(top)])
-        bot.send_message(cid, txt, parse_mode="Markdown")
+    elif m.text == "🔗 Реф. ссылка":
+        bot_user = bot.get_me().username
+        link = f"https://t.me/{bot_user}?start={uid}"
+        bot.send_message(m.chat.id, f"📢 **Приглашай друзей и зарабатывай!**\n\nЗа каждого друга ты получишь `0.50$`\n\nТвоя ссылка:\n`{link}`", parse_mode="Markdown")
 
-    elif c.data == "w":
+    elif m.text == "🏆 Топ лидеров":
+        top = supabase.table("users").select("first_name, refs_count").order("refs_count", desc=True).limit(10).execute().data
+        txt = "🏆 **ТОП-10 ПРИГЛАСИТЕЛЕЙ**\n\n"
+        for i, user in enumerate(top, 1):
+            txt += f"{i}. {user['first_name']} — `{user['refs_count']}` чел.\n"
+        bot.send_message(m.chat.id, txt, parse_mode="Markdown")
+
+    elif m.text == "💸 Вывод средств":
         u = supabase.table("users").select("balance").eq("user_id", uid).single().execute().data
         if float(u['balance']) < 5:
-            return safe_answer(c.id, "❌ Нужно минимум 5$", True)
-        user_state[uid] = float(u['balance'])
-        bot.send_message(cid, "📝 Введите ваш адрес для выплаты:")
+            bot.send_message(m.chat.id, f"❌ **Недостаточно средств!**\n\nМинимальный вывод: `5$`\nВаш баланс: `{u['balance']}$`", parse_mode="Markdown")
+        else:
+            user_state[uid] = 'wait_w'
+            bot.send_message(m.chat.id, "💳 **Введите реквизиты**\n(Карта или адрес кошелька):", 
+                             reply_markup=telebot.types.ReplyKeyboardRemove(), parse_mode="Markdown")
 
-    safe_answer(c.id)
-
-@bot.message_handler(func=lambda m: str(m.from_user.id) in user_state)
-def withdraw_finish(m):
-    uid = str(m.from_user.id)
-    amount = user_state.pop(uid)
-    wallet = m.text
-    
-    # Атомарное списание
-    supabase.table("users").update({"balance": 0}).eq("user_id", uid).execute()
-    
-    bot.send_message(ADMIN_ID, f"💰 **ВЫПЛАТА**\nЮзер: `{uid}`\nСумма: `{amount}$`\nКошелек: `{wallet}`", parse_mode="Markdown")
-    bot.send_message(m.chat.id, "✅ Заявка ушла админу. Ожидайте.")
-
+# --- WEBHOOK ---
 @app.route('/', methods=['POST'])
 def webhook():
     bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
